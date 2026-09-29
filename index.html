@@ -312,6 +312,7 @@ body.exporting #timeline li{break-inside:avoid}
     <div class="tools">
       <button class="btn" id="btnCard" hidden>Website card (PNG)</button>
       <button class="btn" id="btnPdf" hidden>Export PDF</button>
+      <button class="btn" id="btnXls" hidden>Export Excel</button>
       <button class="btn" id="btnShot" hidden>Dashboard (PNG)</button>
       <button class="btn primary" id="btnEdit" aria-pressed="false" hidden>Edit data</button>
     </div>
@@ -407,6 +408,7 @@ body.exporting #timeline li{break-inside:avoid}
 <script src="/config.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script>
 (function(){
 // ---------- static reference: states, zones, hex grid positions ----------
@@ -454,7 +456,16 @@ const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","De
 const fmt=d=>{if(!d)return"";const [y,m,dd]=String(d).split("-");if(!m)return d;return `${+dd} ${MON[+m-1]} ${y}`};
 const list=c=>Object.entries(S[c]).map(([id,v])=>({id,...v}));
 const meta=()=>S.meta.report||{};
-const stageOf=code=>(S.states[code]&&S.states[code].stage)||"unknown";
+const RANK={unknown:0,awaiting:1,received:2,committee:3,scheduled:4,approved:5};
+// A state's stage is the furthest point its record shows: the chosen stage, any milestone date, or an approval event tagged to it.
+function impliedStage(d,code){
+  let st=(d&&d.stage)||"unknown"; if(st==="rejected")return st;
+  const up=k=>{if(RANK[k]>RANK[st])st=k};
+  if(d){if(d.receivedOn)up("received");if(d.committeeOn)up("committee");if(d.scheduledOn)up("scheduled");if(d.approvedOn)up("approved")}
+  if(code&&Object.values(S.events||{}).some(e=>e&&e.tag==="approval"&&Array.isArray(e.states)&&e.states.includes(code)))up("approved");
+  return st;
+}
+const stageOf=code=>impliedStage(S.states[code],code);
 
 // ---------- render ----------
 function counts(){const c=Object.fromEntries(STAGES.map(s=>[s.k,0]));STATES.filter(s=>!s.fct).forEach(s=>c[stageOf(s.code)]++);return c}
@@ -503,7 +514,7 @@ const STEPS=[["transmitted","Transmitted to state"],["received","Received by Hou
 const STEP_IDX={unknown:0,awaiting:0,received:1,committee:2,scheduled:3,approved:4,rejected:3};
 function renderStateCard(){
   if(!selected||!sdlg.open)return;
-  const s=STATES.find(x=>x.code===selected), d=S.states[selected]||{}, stg=d.stage||"unknown", st=STAGE[stg];
+  const s=STATES.find(x=>x.code===selected), d=S.states[selected]||{}, stg=stageOf(selected), st=STAGE[stg];
   const zone=ZONES.find(z=>z[0]===s.zone)[1], idx=STEP_IDX[stg];
   const tDate=meta().transmittedOn||"2026-09-16";
   const dates={transmitted:stg==="awaiting"?"":tDate,received:d.receivedOn,committee:d.committeeOn,scheduled:d.scheduledOn,approved:d.approvedOn};
@@ -628,16 +639,18 @@ function openDlg(col,id,preset={}){
     return `<label class="field" for="${fid}">${f.l}<input id="${fid}" name="${f.k}" type="${f.t}" value="${esc(v)}" ${f.min?`min="${f.min}" max="${f.max}"`:""}></label>`;
   }).join("")+`<div class="dlg-foot">${id&&col!=="meta"?`<button type="button" class="btn danger" id="dlgDel">${col==="states"?"Clear status":"Delete"}</button>`:""}<button type="button" class="btn" id="dlgCancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>`;
   form.onsubmit=async ev=>{ev.preventDefault();const fd=new FormData(form);const data={...cur};sc.fields.forEach(f=>{if(f.t==="states"){data[f.k]=fd.getAll(f.k);return}let v=fd.get(f.k);if(f.t==="number")v=v===""?null:Math.max(f.min||0,Math.min(f.max||99,+v));data[f.k]=v});
-    if(col==="states"){const s=STATES.find(x=>x.code===id);data.name=s.name;data.zone=s.zone}
+    if(col==="states"){const s=STATES.find(x=>x.code===id);data.name=s.name;data.zone=s.zone;data.stage=impliedStage(data,null)}
+    if(col==="events"&&!String(data.text||"").trim()){toast("Add a short description of what happened, then save.");return}
     const docId=id||(col+"-"+Date.now().toString(36));if(!id)data.createdAt=Date.now();
     dlg.close();await write(col,docId,data)};
   $("dlgCancel").onclick=()=>dlg.close();
   const del=$("dlgDel");if(del)del.onclick=async()=>{if(!del.classList.contains("armed")){del.classList.add("armed");del.textContent="Confirm";return}dlg.close();await remove(col,id)};
+  if(col==="states"){const sel=form.querySelector('[name="stage"]');const sync=()=>{const d={stage:sel.value};["receivedOn","committeeOn","scheduledOn","approvedOn"].forEach(k=>{const i=form.querySelector(`[name="${k}"]`);if(i&&i.value)d[k]=i.value});const im=impliedStage(d,null);if(im!==sel.value)sel.value=im};form.querySelectorAll('input[type="date"]').forEach(i=>i.addEventListener("change",sync))}
   dlg.showModal();
 }
 
 // ---------- data ----------
-function toast(msg){const t=document.createElement("div");t.className="toast";t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),2200)}
+function toast(msg){const t=document.createElement("div");t.className="toast";t.textContent=msg;const top=[...document.querySelectorAll("dialog[open]")].pop();(top||document.body).appendChild(t);setTimeout(()=>t.remove(),2200)}
 async function write(col,id,data){
   if(!db){toast("Saving is unavailable in this view");return}
   data.updatedAt=Date.now();
@@ -710,6 +723,61 @@ async function exportPDF(){
   finally{app.style.width=prevW;app.style.maxWidth=prevMax;document.body.classList.remove("exporting");if(wasEditing)document.body.classList.add("editing")}
 }
 $("btnPdf").onclick=exportPDF;
+// ---------- Excel export (ExcelJS) ----------
+async function exportExcel(){
+  if(!window.ExcelJS||!downloads){toast("Excel export is unavailable in this view");return}
+  toast("Preparing Excel file…");
+  try{
+    const wb=new ExcelJS.Workbook();wb.creator="NPBPWG Secretariat";wb.created=new Date();
+    const GREEN="FF046A38", INK="FF1B2A21", BEIGE="FFFAF7F0", LINE="FFE8E1D1";
+    const hex=v=>"FF"+css(v).replace("#","").toUpperCase();
+    const dt=d=>{if(!d)return null;const [y,m,dd]=String(d).split("-").map(Number);return m?new Date(Date.UTC(y,m-1,dd)):d};
+    const names=a=>Array.isArray(a)?a.map(stateName).join(", "):"";
+    const stamp=new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
+    function sheet(name,cols,rows,opt={}){
+      const ws=wb.addWorksheet(name,{views:[{state:"frozen",ySplit:1}],properties:{defaultRowHeight:18}});
+      ws.columns=cols.map(c=>({header:c.h,key:c.k,width:c.w||16,style:c.date?{numFmt:"d mmm yyyy"}:{}}));
+      rows.forEach(r=>ws.addRow(r));
+      const head=ws.getRow(1);head.height=22;
+      head.eachCell(c=>{c.font={bold:true,color:{argb:"FFFFFFFF"},name:"Calibri",size:11};c.fill={type:"pattern",pattern:"solid",fgColor:{argb:GREEN}};c.alignment={vertical:"middle"}});
+      ws.eachRow((row,i)=>{if(i===1)return;row.eachCell({includeEmpty:true},c=>{c.alignment={vertical:"top",wrapText:true};c.border={bottom:{style:"thin",color:{argb:LINE}}};c.font={name:"Calibri",size:11,color:{argb:INK}}})});
+      ws.autoFilter={from:{row:1,column:1},to:{row:1,column:cols.length}};
+      if(opt.after)opt.after(ws);
+      return ws;
+    }
+    // Summary
+    const c=counts(), m=meta(), t=m.transmittedOn||"2026-09-16";
+    const ws0=wb.addWorksheet("Summary",{properties:{defaultRowHeight:18}});
+    ws0.columns=[{width:34},{width:22}];
+    ws0.addRow(["State Police Bill Tracker"]).font={bold:true,size:18,color:{argb:GREEN}};
+    ws0.addRow(["Constitution (Sixth Alteration) Bill · State Police Services"]).font={italic:true,color:{argb:"FF6F7468"}};
+    ws0.addRow([]);
+    const kv=[["States approved",`${c.approved}/36`],["Yet to approve",36-c.approved],["Houses actively considering",ACTIVE.reduce((a,k)=>a+c[k],0)],["Transmitted to states",dt(t)],["Days since transmission",Math.max(0,Math.floor((Date.now()-new Date(t+"T00:00:00+01:00"))/864e5))],["Report period",m.period||""],["Managed by",m.managedBy||"Admin, NPBPWG Secretariat"],["Exported",stamp]];
+    kv.forEach(([k,v])=>{const r=ws0.addRow([k,v]);r.getCell(1).font={bold:true,color:{argb:INK}};if(v instanceof Date)r.getCell(2).numFmt="d mmm yyyy";r.getCell(2).alignment={horizontal:"left"}});
+    ws0.addRow([]);
+    const hr=ws0.addRow(["Stage","Number of states"]);hr.eachCell(x=>{x.font={bold:true,color:{argb:"FFFFFFFF"}};x.fill={type:"pattern",pattern:"solid",fgColor:{argb:GREEN}}});
+    STAGES.filter(s=>c[s.k]||s.k!=="rejected").forEach(s=>{const r=ws0.addRow([s.l,c[s.k]]);r.getCell(1).fill={type:"pattern",pattern:"solid",fgColor:{argb:hex(s.v)}};if(s.dark)r.getCell(1).font={color:{argb:"FFFFFFFF"},bold:true};r.getCell(2).alignment={horizontal:"left"}});
+    // States
+    const zn=Object.fromEntries(ZONES);
+    const srows=STATES.filter(s=>!s.fct).sort((a,b)=>a.name.localeCompare(b.name)).map(s=>{const d=S.states[s.code]||{};return {name:s.name,zone:zn[s.zone],stage:STAGE[stageOf(s.code)].l,date:dt(d.date),recv:dt(d.receivedOn),comm:dt(d.committeeOn),sched:dt(d.scheduledOn),sit:dt(d.nextSitting),appr:dt(d.approvedOn),outcome:d.outcome||"",note:d.note||"",source:d.source||"",_k:stageOf(s.code)}});
+    sheet("States",[{h:"State",k:"name",w:16},{h:"Zone",k:"zone",w:14},{h:"Stage",k:"stage",w:22},{h:"Status date",k:"date",w:13,date:1},{h:"Received",k:"recv",w:12,date:1},{h:"Committee review",k:"comm",w:13,date:1},{h:"Scheduled",k:"sched",w:12,date:1},{h:"Next sitting",k:"sit",w:12,date:1},{h:"Approved",k:"appr",w:12,date:1},{h:"Outcome",k:"outcome",w:16},{h:"Status note",k:"note",w:60},{h:"Source",k:"source",w:24}],srows,{after:ws=>{srows.forEach((r,i)=>{const st=STAGE[r._k],cell=ws.getRow(i+2).getCell(3);cell.fill={type:"pattern",pattern:"solid",fgColor:{argb:hex(st.v)}};if(st.dark)cell.font={name:"Calibri",size:11,bold:true,color:{argb:"FFFFFFFF"}}})}});
+    const tagL={approval:"Approval",transmission:"Transmission",review:"Review",context:"National"};
+    sheet("Timeline",[{h:"Date",k:"date",w:13,date:1},{h:"Type",k:"tag",w:14},{h:"What happened",k:"text",w:80},{h:"States",k:"states",w:30}],list("events").sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(e=>({date:dt(e.date),tag:tagL[e.tag]||"Update",text:e.text||"",states:names(e.states)||"National"})));
+    const kindL={print:"Print / online",broadcast:"Broadcast",social:"Social media"};
+    sheet("Media and social",[{h:"Date",k:"date",w:13,date:1},{h:"Type",k:"kind",w:15},{h:"Outlet or account",k:"outlet",w:20},{h:"Headline or post",k:"headline",w:70},{h:"States",k:"states",w:22},{h:"Link",k:"url",w:30}],list("media").sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(x=>({date:dt(x.date),kind:kindL[x.kind]||"Print / online",outlet:x.outlet||"",headline:x.headline||"",states:names(x.states)||"National",url:x.url?{text:x.url,hyperlink:x.url}:""})));
+    sheet("Voices",[{h:"Date",k:"date",w:13,date:1},{h:"Name",k:"who",w:28},{h:"Role or outlet",k:"role",w:26},{h:"Quote or position",k:"quote",w:70},{h:"State",k:"states",w:18}],list("voices").sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(x=>({date:dt(x.date),who:x.who||"",role:x.role||"",quote:x.quote||"",states:names(x.states)||"National"})));
+    const th=list("themes"),tot=th.reduce((a,x)=>a+(+x.weight||0),0)||1;
+    sheet("Public conversation",[{h:"Topic",k:"title",w:30},{h:"Share of conversation",k:"share",w:14},{h:"What people are saying",k:"detail",w:60},{h:"Opportunity",k:"resp",w:60}],th.sort((a,b)=>(b.weight||0)-(a.weight||0)).map(x=>({title:x.title||"",share:(+x.weight||0)/tot,detail:x.detail||"",resp:x.response||""})),{after:ws=>{ws.getColumn(2).numFmt="0%"}});
+    const lv={high:"High",medium:"Medium",low:"Low"},ord={high:0,medium:1,low:2};
+    sheet("Risks",[{h:"Risk",k:"title",w:32},{h:"Severity",k:"level",w:11},{h:"Detail",k:"detail",w:80}],list("risks").sort((a,b)=>(ord[a.level]??3)-(ord[b.level]??3)).map(x=>({title:x.title||"",level:lv[x.level]||"",detail:x.detail||""})));
+    const sl={open:"Not started",in_progress:"In progress",done:"Done"};
+    sheet("Next steps",[{h:"#",k:"order",w:5},{h:"Step",k:"title",w:44},{h:"Status",k:"status",w:14},{h:"Detail",k:"detail",w:70}],list("actions").sort((a,b)=>(a.order||99)-(b.order||99)).map(x=>({order:x.order||"",title:x.title||"",status:sl[x.status]||"Not started",detail:x.detail||""})));
+    const buf=await wb.xlsx.writeBuffer();
+    await downloads.save({filename:"State Police Bill Tracker "+new Date().toISOString().slice(0,10)+".xlsx",data:new Blob([buf],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"})});
+  }catch(e){if(!e||e.code!=="declined"){console.error(e);toast("Could not create the Excel file")}}
+}
+$("btnXls").onclick=exportExcel;
+
 
 $("btnShot").onclick=()=>capture($("app"),"state-police-tracker-"+new Date().toISOString().slice(0,10)+".png",{ww:1280});
 $("btnCard").onclick=()=>{buildWebcard();const el=$("webcard");el.style.left="0";el.style.zIndex="-1";capture(el,"state-police-web-card-"+new Date().toISOString().slice(0,10)+".png",{bg:"#FAF7F0",scale:1,ww:1200}).finally(()=>{el.style.left="-99999px"})};
@@ -720,7 +788,7 @@ const CFG=window.NPB_TRACKER_CONFIG||{};
 let sb=null, rtChannel=null, passcode=null;
 try{passcode=sessionStorage.getItem("npbTrackerPass")}catch(e){}
 downloads={save:async({filename,data})=>{const url=URL.createObjectURL(data);const a=document.createElement("a");a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),4000);return {status:"saved"}}};
-$("btnShot").hidden=false;$("btnCard").hidden=false;$("btnPdf").hidden=false;$("btnEdit").hidden=false;
+$("btnShot").hidden=false;$("btnCard").hidden=false;$("btnPdf").hidden=false;$("btnXls").hidden=false;$("btnEdit").hidden=false;
 
 function makeDb(){
   const cache={}, listeners={};
