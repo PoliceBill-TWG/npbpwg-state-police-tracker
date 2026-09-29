@@ -57,15 +57,24 @@ Vercel updates the link automatically.
 
 - **Open it:** go to the link. Figures load live, and changes by others appear within
   a second or two.
-- **Edit it:** click **Edit data** and enter the passcode. Editing stays unlocked in
-  that browser tab until you close it.
+- **Edit it:** click **Edit data** and enter the passcode. Your edits are held as
+  **unsaved changes** (see the panel at the bottom right). Nothing is stored and nobody
+  else sees them until you click **Save**.
+- **Undo:** in the panel, click **Show**.
+  - **Unsaved changes:** click **Undo** next to any one change to drop just that change.
+  - **Recent saved changes:** click **Undo** to reverse one saved change, then click
+    **Save** to apply the undo.
 - **Update a state:** click it on the map, then use **Update status**, **+ Event**,
   **+ Post**, **+ Story** or **+ Voice**.
 - **Export:**
   - **Export PDF** saves a clean A4 landscape PDF, keeping every card whole.
-  - **Dashboard (PNG)** saves the whole page as one image.
-  - **Website card (PNG)** saves a 1200×630 summary image.
+  - **Export Excel** saves every table as a workbook.
   - Printing from the browser (Ctrl+P) also gives a clean A4 landscape layout.
+
+## Restoring the 25 Sep 2026 report data
+
+Run `setup/restore-25-sep-and-history.sql` in the Supabase SQL Editor. It replaces
+all tracker data with the report data and switches on the saved-change history.
 
 ## Changing the passcode
 

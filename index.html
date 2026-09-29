@@ -294,6 +294,24 @@ body.exporting #timeline li{break-inside:avoid}
   #timeline::before{display:none}
   #timeline li{break-inside:avoid}
 }
+/* unsaved-changes panel */
+.dbar{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));width:min(440px,calc(100vw - 32px));background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 14px 40px rgba(40,30,10,.18);z-index:40;display:flex;flex-direction:column;overflow:hidden;color:var(--ink);font-family:var(--body)}
+.dbar-head{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.dbar-head b{font-size:14.5px;font-weight:600;margin-right:auto}
+.dtabs{display:flex;gap:4px;width:100%;order:3}
+.dtabs button{border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:999px;padding:3px 10px;font-size:12.5px}
+.dtabs button[aria-pressed="true"]{background:var(--surface-2);color:var(--ink);border-color:var(--muted)}
+.dbar ol{list-style:none;margin:0;padding:6px 14px 10px;max-height:38vh;overflow:auto;display:flex;flex-direction:column}
+.dbar li{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line);font-size:13.5px}
+.dbar li:first-child{border-top:none}
+.dbar li small{display:block;color:var(--muted);font-size:11.5px;margin-top:2px}
+.dbar li.empty{color:var(--muted);display:block}
+.dbar.collapsed ol,.dbar.collapsed .dtabs{display:none}
+.dbar .btn{padding:6px 14px;font-size:13.5px}
+body.editing .sc-body{padding-bottom:96px}
+body.editing .wrap{padding-bottom:110px}
+body.exporting .dbar{display:none!important}
+@media print{.dbar{display:none!important}}
 </style>
 </head>
 <body>
@@ -310,11 +328,9 @@ body.exporting #timeline li{break-inside:avoid}
       </div>
     </div>
     <div class="tools">
-      <button class="btn" id="btnCard" hidden>Website card (PNG)</button>
-      <button class="btn" id="btnPdf" hidden>Export PDF</button>
+            <button class="btn" id="btnPdf" hidden>Export PDF</button>
       <button class="btn" id="btnXls" hidden>Export Excel</button>
-      <button class="btn" id="btnShot" hidden>Dashboard (PNG)</button>
-      <button class="btn primary" id="btnEdit" aria-pressed="false" hidden>Edit data</button>
+            <button class="btn primary" id="btnEdit" aria-pressed="false" hidden>Edit data</button>
     </div>
   </header>
   <div class="meta-line">
@@ -398,6 +414,13 @@ body.exporting #timeline li{break-inside:avoid}
 
 <div id="webcard" aria-hidden="true"></div>
 
+<div class="dbar" id="draftBar" hidden role="region" aria-label="Unsaved changes">
+  <div class="dbar-head"><b id="dCount">No unsaved changes</b><button class="mini" id="dToggle" type="button">Hide</button><button class="btn primary" id="dSave" type="button">Save</button>
+    <div class="dtabs"><button type="button" data-dtab="pending" aria-pressed="true">Unsaved changes</button><button type="button" data-dtab="history" aria-pressed="false">Recent saved changes</button></div>
+  </div>
+  <ol id="dList"></ol>
+</div>
+
 <dialog id="stateDlg" class="scard" aria-label="State record"><div id="stateBody" class="sc-body"></div></dialog>
 
 <dialog id="passDlg"><form id="passForm" novalidate><div class="eyebrow">Secretariat only</div><h3>Unlock editing</h3><p class="hint" style="margin:0">Enter the edit passcode. Anyone with the link can view the tracker; only the passcode lets you change it.</p><label class="field" for="passIn">Edit passcode<input id="passIn" type="password" autocomplete="current-password"></label><p id="passErr" class="hint" style="margin:0;color:var(--crit)" role="alert" hidden></p><div class="dlg-foot"><button type="button" class="btn" id="passCancel">Cancel</button><button type="submit" class="btn primary" id="passOk">Unlock</button></div></form></dialog>
@@ -447,7 +470,7 @@ const SCHEMAS={
 };
 
 // ---------- state ----------
-const S={states:{},events:{},themes:{},risks:{},actions:{},voices:{},media:{},meta:{}};
+const S={states:{},events:{},themes:{},risks:{},actions:{},voices:{},media:{},meta:{},history:{}};
 let db=null, canWrite=false, editing=false, selected=null, filter=null, loaded=false;
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -604,7 +627,7 @@ function renderMeta(){
   $("lastChange").textContent=last?new Date(last).toLocaleString("en-GB",{day:"numeric",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"}):"–";
 }
 
-function renderAll(){renderHero();renderStack();renderMap();renderZones();renderThemes();renderTimeline();renderRisks();renderActions();renderVoices();renderMedia();renderMeta();renderStateCard()}
+function renderAll(){renderHero();renderStack();renderMap();renderZones();renderThemes();renderTimeline();renderRisks();renderActions();renderVoices();renderMedia();renderMeta();renderStateCard();if(typeof renderDrafts==="function")renderDrafts()}
 
 // ---------- interactions ----------
 document.addEventListener("click",e=>{
@@ -651,18 +674,111 @@ function openDlg(col,id,preset={}){
 
 // ---------- data ----------
 function toast(msg){const t=document.createElement("div");t.className="toast";t.textContent=msg;const top=[...document.querySelectorAll("dialog[open]")].pop();(top||document.body).appendChild(t);setTimeout(()=>t.remove(),2200)}
-async function write(col,id,data){
+async function dbWrite(col,id,data){
   if(!db){toast("Saving is unavailable in this view");return}
   data.updatedAt=Date.now();
   try{await db.doc(col+"/"+id).set(data);toast("Saved")}catch(err){if(err&&err.code==="invalid_argument"){passcode=null;try{sessionStorage.removeItem("npbTrackerPass")}catch(e){};setEditing(false);toast("The edit passcode was not accepted. Unlock editing again.")}else toast("Could not save. Try again in a moment.")}
 }
-async function remove(col,id){try{await db.doc(col+"/"+id).delete();toast(col==="states"?"Status cleared":"Deleted")}catch(e){toast("Could not delete. Try again in a moment.")}}
+async function dbRemove(col,id){try{await db.doc(col+"/"+id).delete();toast(col==="states"?"Status cleared":"Deleted")}catch(e){toast("Could not delete. Try again in a moment.")}}
 
 function subscribe(){
   let first=0;const cols=Object.keys(S);
-  cols.forEach(c=>{db.collection(c).onSnapshot(snap=>{const o={};snap.docs.forEach(d=>{if(d.exists)o[d.id]=d.data()});S[c]=o;if(!loaded){first++;if(first>=cols.length){loaded=true;setLive(true)}}renderAll()},err=>{setLive(false,"Live updates paused. Reload the page to reconnect.")})});
+  cols.forEach(c=>{db.collection(c).onSnapshot(snap=>{const o={};snap.docs.forEach(d=>{if(d.exists)o[d.id]=d.data()});BASE[c]=o;S[c]=overlay(c);if(!loaded){first++;if(first>=cols.length){loaded=true;setLive(true)}}renderAll()},err=>{setLive(false,"Live updates paused. Reload the page to reconnect.")})});
 }
 function setLive(on,msg){$("liveDot").classList.toggle("on",on);$("liveTxt").textContent=on?"Live":"Offline";if(msg){$("banner").hidden=false;$("banner").textContent=msg}}
+
+// ---------- drafts: nothing is stored until Save; each change can be undone on its own ----------
+const BASE={};
+const DRAFTS=[]; // {col,id,before,after,label}
+const clone=o=>o==null?null:JSON.parse(JSON.stringify(o));
+const same=(a,b)=>{const strip=o=>{if(!o)return o;const c={...o};delete c.updatedAt;return JSON.stringify(Object.keys(c).sort().reduce((r,k)=>(r[k]=c[k],r),{}))};return strip(a)===strip(b)};
+function overlay(c){const o={...(BASE[c]||{})};DRAFTS.forEach(d=>{if(d.col!==c)return;if(d.after)o[d.id]=d.after;else delete o[d.id]});return o}
+const NOUN={events:"event",media:"story or post",voices:"voice",themes:"topic",risks:"risk",actions:"next step",meta:"report details",states:"state"};
+const FIELD={stage:"stage",date:"status date",note:"note",receivedOn:"received",committeeOn:"committee review",scheduledOn:"scheduled",nextSitting:"next sitting",approvedOn:"approved on",outcome:"outcome",source:"source",status:"status",level:"severity",weight:"share",title:"title",text:"text",headline:"headline",quote:"quote",tag:"type",kind:"type",states:"states",period:"period",managedBy:"managed by",threshold:"threshold",transmittedOn:"transmitted on"};
+function short(t,n=48){t=String(t||"").trim();return t.length>n?t.slice(0,n-1)+"…":t}
+function nameOf(col,d){if(!d)return"";return col==="states"?(d.name||""):short(d.title||d.headline||d.text||d.quote||d.who||"")}
+function val(k,v){if(v==null||v==="")return"none";if(k==="stage")return (STAGE[v]||{}).l||v;if(/On$|^date$|nextSitting/.test(k))return fmt(v);if(k==="status")return({open:"Not started",in_progress:"In progress",done:"Done"})[v]||v;if(Array.isArray(v))return v.map(stateName).join(", ")||"none";return short(v,28)}
+function describe(col,before,after){
+  if(!before&&after)return `Added ${NOUN[col]}: ${nameOf(col,after)||"(untitled)"}`;
+  if(before&&!after)return col==="states"?`Cleared status: ${before.name||""}`:`Deleted ${NOUN[col]}: ${nameOf(col,before)}`;
+  const ch=Object.keys({...before,...after}).filter(k=>k!=="updatedAt"&&k!=="createdAt"&&JSON.stringify(before[k]??"")!==JSON.stringify(after[k]??""));
+  const bits=ch.slice(0,2).map(k=>`${FIELD[k]||k} ${val(k,before[k])} → ${val(k,after[k])}`);
+  if(ch.length>2)bits.push(`+${ch.length-2} more`);
+  const who=col==="states"?(after.name||before.name):col==="meta"?"Report details":`${NOUN[col][0].toUpperCase()+NOUN[col].slice(1)} "${nameOf(col,after)}"`;
+  return `${who}: ${bits.join("; ")||"no change"}`;
+}
+function refreshView(){Object.keys(S).forEach(c=>{S[c]=overlay(c)});renderAll();renderDrafts()}
+function stage(col,id,after){
+  const key=col+"/"+id;let d=DRAFTS.find(x=>x.col===col&&x.id===id);
+  if(!d){d={col,id,before:clone((BASE[col]||{})[id]||null),after:null};DRAFTS.push(d)}
+  d.after=after?clone(after):null;
+  if((!d.before&&!d.after)||(d.before&&d.after&&same(d.before,d.after)))DRAFTS.splice(DRAFTS.indexOf(d),1);
+  else d.label=describe(col,d.before,d.after);
+  refreshView();
+}
+async function write(col,id,data){if(!db){toast("Saving is unavailable in this view");return}data.updatedAt=Date.now();stage(col,id,data);toast("Added to unsaved changes. Click Save to keep it.")}
+async function remove(col,id){stage(col,id,null);toast("Added to unsaved changes. Click Save to keep it.")}
+function undoDraft(i){const d=DRAFTS[i];if(!d)return;DRAFTS.splice(i,1);refreshView();toast("Undone: "+short(d.label,60))}
+function undoSaved(hid){
+  const h=(S.history||{})[hid];if(!h)return;
+  const cur=(BASE[h.col]||{})[h.docId]||null;
+  const target=h.before?{...clone(h.before),updatedAt:Date.now()}:null;
+  let d=DRAFTS.find(x=>x.col===h.col&&x.id===h.docId);
+  if(!d){d={col:h.col,id:h.docId,before:clone(cur),after:null};DRAFTS.push(d)}
+  d.after=target;
+  if((!d.before&&!d.after)||(d.before&&d.after&&same(d.before,d.after))){DRAFTS.splice(DRAFTS.indexOf(d),1);toast("Nothing to undo: that record already matches");}
+  else{d.label="Undo saved change: "+h.label;d.undoOf=hid;toast("Undo added to unsaved changes. Click Save to apply it.")}
+  dtab="pending";refreshView();
+}
+let saving=false;
+async function saveAll(){
+  if(saving)return;
+  if(!DRAFTS.length){setEditMode(false);return}
+  if(!db){toast("Saving is unavailable in this view");return}
+  saving=true;updateSaveBtn();let n=0,failed=null;
+  for(const d of [...DRAFTS]){
+    try{
+      if(d.after)await db.doc(d.col+"/"+d.id).set(d.after);else await db.doc(d.col+"/"+d.id).delete();
+      const hid="h"+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+      await db.doc("history/"+hid).set({at:Date.now(),label:d.label,col:d.col,docId:d.id,before:d.before,after:d.after,undoOf:d.undoOf||null,updatedAt:Date.now()});
+      DRAFTS.splice(DRAFTS.indexOf(d),1);n++;
+    }catch(e){failed=e;break}
+  }
+  saving=false;refreshView();
+  if(failed){
+    if(failed.code==="invalid_argument"&&typeof passcode!=="undefined"){passcode=null;try{sessionStorage.removeItem("npbTrackerPass")}catch(e){};setEditMode(false);toast("The edit passcode was not accepted. Your unsaved changes are kept: click Edit data, enter the passcode, then Save.");}
+    else toast(`Saved ${n}. ${DRAFTS.length} change${DRAFTS.length>1?"s":""} could not be saved yet. Check your connection and click Save again.`);
+    return;
+  }
+  toast(`Saved ${n} change${n>1?"s":""}`);setEditMode(false);
+}
+function updateSaveBtn(){const b=$("btnEdit");b.textContent=!editing?"Edit data":saving?"Saving…":DRAFTS.length?`Save (${DRAFTS.length})`:"Save";b.disabled=saving}
+function setEditMode(on){editing=on;document.body.classList.toggle("editing",on);$("btnEdit").setAttribute("aria-pressed",on);$("mapHint").textContent=on?"Click a state to open and update it":"Click a state for its full record";updateSaveBtn();renderActions();renderStateCard();renderDrafts()}
+let dtab="pending",dOpen=false;
+function placeBar(){const bar=$("draftBar");const top=[...document.querySelectorAll("dialog[open]")].filter(x=>x.id!=="passDlg").pop();const host=top||document.body;if(bar.parentElement!==host)host.appendChild(bar)}
+function renderDrafts(){
+  const bar=$("draftBar");if(!bar)return;updateSaveBtn();
+  const formOpen=$("dlg").open||($("passDlg")&&$("passDlg").open);bar.hidden=!editing||formOpen;if(bar.hidden)return;placeBar();
+  const hist=Object.entries(S.history||{}).map(([id,v])=>({id,...v})).sort((a,b)=>(b.at||0)-(a.at||0)).slice(0,30);
+  const when=t=>new Date(t).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
+  $("dCount").textContent=DRAFTS.length?`${DRAFTS.length} unsaved change${DRAFTS.length>1?"s":""}`:"No unsaved changes";
+  $("dSave").textContent=saving?"Saving…":"Save";$("dSave").disabled=saving;
+  bar.querySelectorAll("[data-dtab]").forEach(b=>b.setAttribute("aria-pressed",b.dataset.dtab===dtab));
+  bar.classList.toggle("collapsed",!dOpen);$("dToggle").textContent=dOpen?"Hide":"Show";
+  $("dList").innerHTML=dtab==="pending"
+    ?(DRAFTS.length?DRAFTS.map((d,i)=>`<li><span>${esc(d.label)}</span><button class="mini" data-undo-draft="${i}">Undo</button></li>`).join(""):`<li class="empty">Your edits appear here until you click Save. Each one can be undone on its own.</li>`)
+    :(hist.length?hist.map(h=>`<li><span>${esc(h.label)}<small>${when(h.at)}</small></span><button class="mini" data-undo-saved="${h.id}">Undo</button></li>`).join(""):`<li class="empty">Saved changes appear here. Undo one to reverse it, then click Save.</li>`);
+}
+document.addEventListener("click",e=>{
+  const t=e.target.closest("button");if(!t)return;
+  if(t.dataset.undoDraft!=null){undoDraft(+t.dataset.undoDraft);return}
+  if(t.dataset.undoSaved){undoSaved(t.dataset.undoSaved);return}
+  if(t.dataset.dtab){dtab=t.dataset.dtab;dOpen=true;renderDrafts();return}
+  if(t.id==="dSave"){saveAll();return}
+  if(t.id==="dToggle"){dOpen=!dOpen;renderDrafts();return}
+});
+["stateDlg","dlg"].forEach(id=>{const el=$(id);if(!el)return;el.addEventListener("close",()=>setTimeout(renderDrafts,0));new MutationObserver(()=>{if(el.open)setTimeout(renderDrafts,0)}).observe(el,{attributes:true,attributeFilter:["open"]})});
+window.addEventListener("beforeunload",e=>{if(DRAFTS.length){e.preventDefault();e.returnValue=""}});
 
 // ---------- exports ----------
 let downloads=null;
@@ -779,8 +895,6 @@ async function exportExcel(){
 $("btnXls").onclick=exportExcel;
 
 
-$("btnShot").onclick=()=>capture($("app"),"state-police-tracker-"+new Date().toISOString().slice(0,10)+".png",{ww:1280});
-$("btnCard").onclick=()=>{buildWebcard();const el=$("webcard");el.style.left="0";el.style.zIndex="-1";capture(el,"state-police-web-card-"+new Date().toISOString().slice(0,10)+".png",{bg:"#FAF7F0",scale:1,ww:1200}).finally(()=>{el.style.left="-99999px"})};
 
 // ---------- boot (Vercel link: open to view, passcode to edit) ----------
 const COLS=Object.keys(S);
@@ -788,7 +902,7 @@ const CFG=window.NPB_TRACKER_CONFIG||{};
 let sb=null, rtChannel=null, passcode=null;
 try{passcode=sessionStorage.getItem("npbTrackerPass")}catch(e){}
 downloads={save:async({filename,data})=>{const url=URL.createObjectURL(data);const a=document.createElement("a");a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),4000);return {status:"saved"}}};
-$("btnShot").hidden=false;$("btnCard").hidden=false;$("btnPdf").hidden=false;$("btnXls").hidden=false;$("btnEdit").hidden=false;
+$("btnPdf").hidden=false;$("btnXls").hidden=false;$("btnEdit").hidden=false;
 
 function makeDb(){
   const cache={}, listeners={};
@@ -817,9 +931,9 @@ function makeDb(){
 
 // passcode unlock for editing
 const passDlg=$("passDlg");
-function setEditing(on){editing=on;document.body.classList.toggle("editing",on);$("btnEdit").setAttribute("aria-pressed",on);$("btnEdit").textContent=on?"Done editing":"Edit data";$("mapHint").textContent=on?"Click a state to open and update it":"Click a state for its full record";renderActions();renderStateCard()}
+function setEditing(on){setEditMode(on)}
 $("btnEdit").onclick=()=>{
-  if(editing){setEditing(false);return}
+  if(editing){saveAll();return}
   if(passcode){setEditing(true);return}
   $("passErr").hidden=true;$("passIn").value="";passDlg.showModal();setTimeout(()=>$("passIn").focus(),30);
 };
